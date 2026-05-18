@@ -157,8 +157,22 @@
       const json = new TextDecoder().decode(ptBuf);
       window.POINTS = JSON.parse(json);
       window.POINTS_GENERATED_AT = blob.generated_at;
-      sessionStorage.setItem("mapPw", password); // запомнить на сессию, чтобы не вводить при reload
+      localStorage.setItem("mapPw", password); // помним навсегда, не только на сессию
       $("gate").remove();
+      // Маленькая кнопка "Выйти" — стереть сохранённый пароль (для чужих компов)
+      const logoutBtn = document.createElement("button");
+      logoutBtn.textContent = "Выйти";
+      logoutBtn.title = "Удалить сохранённый пароль на этом устройстве";
+      logoutBtn.style.cssText = "position:fixed;bottom:6px;right:6px;z-index:9999;background:rgba(255,255,255,0.92);border:1px solid #bbb;padding:3px 9px;border-radius:3px;font-size:11px;cursor:pointer;color:#555;font-family:-apple-system,Segoe UI,Roboto,sans-serif;";
+      logoutBtn.onmouseenter = () => { logoutBtn.style.background = "#fff"; logoutBtn.style.color = "#222"; };
+      logoutBtn.onmouseleave = () => { logoutBtn.style.background = "rgba(255,255,255,0.92)"; logoutBtn.style.color = "#555"; };
+      logoutBtn.onclick = () => {
+        if (confirm("Удалить сохранённый пароль с этого устройства? При следующем заходе его нужно будет ввести заново.")) {
+          localStorage.removeItem("mapPw");
+          location.reload();
+        }
+      };
+      document.body.appendChild(logoutBtn);
       // Запускаем bootstrap карты вручную — основной <script> уже отработал, но не нашёл POINTS
       if (typeof bootstrapMap === "function") bootstrapMap();
     } catch (e) {
@@ -170,8 +184,9 @@
   $("gateBtn").addEventListener("click", () => tryUnlock($("gatePass").value));
   $("gatePass").addEventListener("keydown", e => { if (e.key === "Enter") tryUnlock($("gatePass").value); });
 
-  // Auto-unlock если пароль уже введён в этой сессии
-  const cached = sessionStorage.getItem("mapPw");
+  // Auto-unlock если пароль уже сохранён на этом устройстве (localStorage = навсегда).
+  // sessionStorage тоже проверяем — на случай если кто-то открыл с прошлой версией.
+  const cached = localStorage.getItem("mapPw") || sessionStorage.getItem("mapPw");
   if (cached) tryUnlock(cached);
 })();
 </script>

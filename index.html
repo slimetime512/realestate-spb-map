@@ -1,0 +1,750 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Карта коммерческой недвижимости СПб</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css">
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css">
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; font-family: -apple-system, Segoe UI, Roboto, sans-serif; }
+  #map { position: absolute; top: 0; left: 0; right: 280px; bottom: 0; }
+  #panel { position: absolute; top: 0; right: 0; bottom: 0; width: 280px; padding: 12px; box-sizing: border-box; background: #f8f8f8; border-left: 1px solid #ddd; overflow-y: auto; font-size: 13px; }
+  #panel h2 { font-size: 15px; margin: 0 0 8px 0; }
+  #panel h3 { font-size: 12px; text-transform: uppercase; color: #666; margin: 14px 0 6px 0; }
+  .zone-row { display: flex; align-items: center; padding: 3px 0; cursor: pointer; user-select: none; }
+  .zone-row input { margin-right: 6px; }
+  .zone-dot { display: inline-block; width: 12px; height: 12px; border-radius: 50%; margin-right: 6px; border: 1px solid rgba(0,0,0,0.2); }
+  .zone-count { margin-left: auto; color: #888; font-variant-numeric: tabular-nums; }
+  .pop { font-size: 13px; line-height: 1.4; min-width: 200px; }
+  .pop .price { font-weight: bold; font-size: 15px; }
+  .pop .dev-cheap { color: #0a7d18; }
+  .pop .dev-exp { color: #c93232; }
+  .pop a { color: #1968c4; }
+  .stat { display: flex; justify-content: space-between; padding: 2px 0; font-size: 12px; color: #555; }
+  select, input[type="search"] { width: 100%; padding: 5px; margin: 4px 0; box-sizing: border-box; font-size: 13px; }
+  .legend-note { font-size: 11px; color: #888; line-height: 1.4; margin-top: 8px; }
+  .modes { display: flex; border: 1px solid #ccc; border-radius: 4px; overflow: hidden; }
+  .modes button { flex: 1; padding: 6px; border: none; background: #fff; cursor: pointer; font-size: 12px; border-right: 1px solid #ccc; }
+  .modes button:last-child { border-right: none; }
+  .modes button.active { background: #1968c4; color: #fff; }
+  #scale-bar { height: 14px; border-radius: 2px;
+    background: linear-gradient(to right, hsl(135,85%,38%), hsl(100,80%,42%), hsl(60,90%,48%), hsl(30,90%,48%), hsl(0,80%,45%));
+    border: 1px solid #ccc; }
+  #scale-labels { display: flex; justify-content: space-between; font-size: 11px; color: #666; margin-top: 2px; font-variant-numeric: tabular-nums; }
+  #cursorTip {
+    position: fixed; pointer-events: none; z-index: 9999;
+    background: rgba(20, 20, 20, 0.9); color: #fff; padding: 7px 10px;
+    border-radius: 4px; font-size: 12px; line-height: 1.4;
+    display: none; box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+    font-variant-numeric: tabular-nums; white-space: nowrap;
+  }
+  #cursorTip .big { font-size: 14px; font-weight: bold; }
+  #cursorTip .sub { color: #bbb; font-size: 11px; margin-top: 2px; }
+  #cursorTip .empty { color: #888; font-style: italic; }
+  #cursorTip .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: middle; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="cursorTip"></div>
+<div id="panel">
+  <h2>Коммерческая недвижимость СПб</h2>
+  <div id="counters" class="stat"></div>
+  <button id="refreshBtn" style="width:100%; padding:8px; margin-top:8px; background:#1968c4; color:#fff; border:none; border-radius:4px; font-size:13px; cursor:pointer; display:none;">
+    Обновить из БД
+  </button>
+  <div id="refreshStatus" style="font-size:11px; color:#888; margin-top:6px; min-height:14px;"></div>
+  <script>
+    // Кнопка «Обновить из БД» работает только когда страница открыта через serve_map.mjs (localhost).
+    // На GitHub Pages эндпоинта /refresh нет, так что прячем кнопку.
+    if (location.hostname === "localhost" || location.hostname === "127.0.0.1") {
+      document.getElementById("refreshBtn").style.display = "block";
+    }
+  </script>
+
+  <h3>Режим</h3>
+  <div class="modes">
+    <button data-mode="heatmap" class="active">Тепловая</button>
+    <button data-mode="both">Обе</button>
+    <button data-mode="points">Точки</button>
+  </div>
+
+  <h3>Цена ₽/м²</h3>
+  <div id="scale-bar"></div>
+  <div id="scale-labels"><span>80k</span><span>180k</span><span>280k</span><span>400k+</span></div>
+
+  <h3>Зона цены</h3>
+  <div id="zones"></div>
+
+  <h3>Источник</h3>
+  <div id="sources"></div>
+
+  <h3>Район</h3>
+  <select id="raionFilter"><option value="">все</option></select>
+
+  <h3>Тип объекта</h3>
+  <select id="subtypeFilter"><option value="">все</option></select>
+
+  <h3>Площадь</h3>
+  <select id="areaFilter">
+    <option value="">любая</option>
+    <option value="<50">меньше 50 м²</option>
+    <option value="50-100">50–100 м²</option>
+    <option value="100-200">100–200 м²</option>
+    <option value="200-500">200–500 м²</option>
+    <option value="500-1000">500–1000 м²</option>
+    <option value=">1000">больше 1000 м²</option>
+  </select>
+
+  <div class="legend-note">
+    <b>Тепловая</b>: цвет ячейки 220×220м — медианная цена/м² в ней.<br>
+    Подведи курсор — увидишь медиану в радиусе 500м.<br>
+    <b>Точки</b> — отдельные предложения, кликабельны, цвет по «зоне» (отклонение от медианы своей категории).
+  </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+<script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+
+<div id="gate" style="position:fixed;inset:0;background:#1b2a3a;color:#fff;display:flex;align-items:center;justify-content:center;z-index:99999;font-family:-apple-system,Segoe UI,Roboto,sans-serif;">
+  <div style="text-align:center;max-width:340px;padding:20px;">
+    <div style="font-size:18px;margin-bottom:8px;font-weight:600;">Карта коммерческой недвижимости СПб</div>
+    <div style="font-size:13px;color:#9bb;margin-bottom:18px;">Введите пароль</div>
+    <input id="gatePass" type="password" autofocus style="width:100%;padding:9px 12px;font-size:14px;border:1px solid #456;background:#0e1a26;color:#fff;border-radius:4px;box-sizing:border-box;font-family:inherit;">
+    <button id="gateBtn" style="margin-top:12px;width:100%;padding:9px;background:#3b82d6;color:#fff;border:none;border-radius:4px;font-size:14px;cursor:pointer;">Открыть</button>
+    <div id="gateErr" style="margin-top:10px;color:#f87171;font-size:12px;min-height:16px;"></div>
+    <div style="margin-top:20px;font-size:11px;color:#678;">Данные зашифрованы AES-256. Без пароля сервер ничего не отдаст.</div>
+  </div>
+</div>
+<script>
+(async function () {
+  const $ = id => document.getElementById(id);
+  const errEl = $("gateErr");
+  function setErr(msg) { errEl.textContent = msg || ""; }
+  function setBusy(b) { $("gateBtn").disabled = b; $("gateBtn").textContent = b ? "Расшифровка…" : "Открыть"; }
+
+  function b64(s) { const b = atob(s); const a = new Uint8Array(b.length); for (let i = 0; i < b.length; i++) a[i] = b.charCodeAt(i); return a; }
+
+  let blob;
+  try {
+    const r = await fetch("./points.enc.json", { cache: "no-cache" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    blob = await r.json();
+  } catch (e) {
+    setErr("Не удалось загрузить points.enc.json: " + e.message);
+    return;
+  }
+
+  async function tryUnlock(password) {
+    setBusy(true); setErr("");
+    try {
+      const enc = new TextEncoder();
+      const pwKey = await crypto.subtle.importKey("raw", enc.encode(password), { name: "PBKDF2" }, false, ["deriveKey"]);
+      const aesKey = await crypto.subtle.deriveKey(
+        { name: "PBKDF2", salt: b64(blob.salt), iterations: blob.iter, hash: "SHA-256" },
+        pwKey,
+        { name: "AES-GCM", length: 256 },
+        false,
+        ["decrypt"]
+      );
+      // Web Crypto хочет ct и tag вместе для GCM
+      const ct = b64(blob.ct), tag = b64(blob.tag);
+      const ctAndTag = new Uint8Array(ct.length + tag.length);
+      ctAndTag.set(ct, 0); ctAndTag.set(tag, ct.length);
+      const ptBuf = await crypto.subtle.decrypt({ name: "AES-GCM", iv: b64(blob.iv) }, aesKey, ctAndTag);
+      const json = new TextDecoder().decode(ptBuf);
+      window.POINTS = JSON.parse(json);
+      window.POINTS_GENERATED_AT = blob.generated_at;
+      sessionStorage.setItem("mapPw", password); // запомнить на сессию, чтобы не вводить при reload
+      $("gate").remove();
+      // Запускаем bootstrap карты вручную — основной <script> уже отработал, но не нашёл POINTS
+      if (typeof bootstrapMap === "function") bootstrapMap();
+    } catch (e) {
+      setErr("Неверный пароль");
+      setBusy(false);
+    }
+  }
+
+  $("gateBtn").addEventListener("click", () => tryUnlock($("gatePass").value));
+  $("gatePass").addEventListener("keydown", e => { if (e.key === "Enter") tryUnlock($("gatePass").value); });
+
+  // Auto-unlock если пароль уже введён в этой сессии
+  const cached = sessionStorage.getItem("mapPw");
+  if (cached) tryUnlock(cached);
+})();
+</script>
+
+<script>
+// ============================================================
+// Константы
+// ============================================================
+const ZONES = [
+  { key: "outlier_cheap",     label: "Очень дёшево",  color: "#0f7a25" },
+  { key: "cheap",             label: "Дёшево",        color: "#5fbf5a" },
+  { key: "normal",            label: "Нормально",     color: "#7ea4cb" },
+  { key: "pricey",            label: "Дорого",        color: "#ffae42" },
+  { key: "outlier_expensive", label: "Очень дорого",  color: "#c93232" },
+  { key: "no_data",           label: "Нет данных",    color: "#bfbfbf" },
+];
+const ZONE_COLOR = Object.fromEntries(ZONES.map(z => [z.key, z.color]));
+
+// Перевод yandex commercialTypes / cian/avito subtypes на русский (только отображение).
+// В points.js subtype приходит как ключ из export_map_points.mjs.
+const SUBTYPE_RU = {
+  psn: "Свободного назначения",
+  office: "Офис",
+  retail: "Торговое",
+  catering: "Общепит",
+  warehouse: "Склад",
+  industry: "Производство",
+  autoservice: "Автосервис",
+  hotel: "Гостиница",
+  ready_business: "Готовый бизнес",
+  land: "Земля",
+  mixed: "Юр. адрес / смешанное",
+  garage: "Гараж",
+  building: "Здание",
+};
+function subtypeRu(s) {
+  if (!s) return "?";
+  return SUBTYPE_RU[s] || s;
+}
+
+// Вычисляем зону цены на лету из local_market_deviation_pct.
+// listings_merged.price_zone всегда NULL (см. docs/20_pipelines_overview.md §11),
+// зато local_market_deviation_pct (p.ldev) заполнен. Используем его + p.ln (соседи).
+function getZone(p) {
+  if (p.zone) return p.zone;                 // если когда-нибудь начнут заполнять — используем
+  if (p.ldev == null || (p.ln || 0) < 3) return "no_data";
+  const d = p.ldev;
+  if (d <= -25) return "outlier_cheap";
+  if (d <= -10) return "cheap";
+  if (d <   10) return "normal";
+  if (d <=  25) return "pricey";
+  return "outlier_expensive";
+}
+
+// Сетка тепловой ~220×220м (1° lat ≈ 111 км; 1° lng на 60° N ≈ 55.5 км)
+const HM_LAT_STEP = 0.002;
+const HM_LNG_STEP = 0.004;
+
+// Диапазон цены для градиента
+const PRICE_MIN = 80000;   // зелёный
+const PRICE_MAX = 400000;  // красный
+
+// Радиус подсказки у курсора, метров
+const CURSOR_RADIUS_M = 500;
+
+// ============================================================
+// Состояние и фильтры
+// ============================================================
+let allPoints = [];
+const state = {
+  mode: "heatmap",  // heatmap | both | points
+  zones: new Set(ZONES.map(z => z.key)),
+  sources: new Set(["avito", "cian", "yandex"]),
+  raion: "",
+  subtype: "",
+  area: "",
+};
+
+function areaBucket(a) {
+  if (!a || a <= 0) return null;
+  if (a < 50) return "<50";
+  if (a < 100) return "50-100";
+  if (a < 200) return "100-200";
+  if (a < 500) return "200-500";
+  if (a < 1000) return "500-1000";
+  return ">1000";
+}
+
+// Уникальные источники объекта. p.src приходит как "avito" или "avito,cian,yandex"
+// (с возможными повторами типа "yandex,yandex,yandex" если несколько yandex-объявлений
+// слились в один merged-объект). Возвращаем массив уникальных значений.
+function pointSources(p) {
+  if (!p.src) return [];
+  return [...new Set(p.src.split(","))];
+}
+
+function passesFilters(p) {
+  if (!state.zones.has(getZone(p))) return false;
+  // Объект показываем, если хотя бы один из его источников включён в фильтре
+  if (!pointSources(p).some(s => state.sources.has(s))) return false;
+  if (state.raion && p.raion !== state.raion) return false;
+  if (state.subtype && p.subtype !== state.subtype) return false;
+  if (state.area && areaBucket(p.area) !== state.area) return false;
+  return true;
+}
+
+function priceToColor(price) {
+  const t = Math.max(0, Math.min(1, (price - PRICE_MIN) / (PRICE_MAX - PRICE_MIN)));
+  const hue = (1 - t) * 135; // 135=изумрудный зелёный, 0=красный
+  return `hsl(${hue}, 85%, 40%)`;
+}
+
+function median(arr) { return arr.sort((a, b) => a - b)[Math.floor(arr.length / 2)]; }
+
+function fmtRub(n) {
+  if (!n) return "—";
+  if (n >= 1e6) return (n / 1e6).toFixed(n >= 10e6 ? 0 : 2) + " млн ₽";
+  return n.toLocaleString("ru-RU") + " ₽";
+}
+
+function haversineDist(lat1, lng1, lat2, lng2) {
+  const R = 6371000;
+  const toRad = d => d * Math.PI / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+
+// ============================================================
+// Карта и слои
+// ============================================================
+const map = L.map("map", { preferCanvas: true }).setView([59.94, 30.31], 11);
+L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+  maxZoom: 19,
+  attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+}).addTo(map);
+
+const cluster = L.markerClusterGroup({
+  maxClusterRadius: 50,
+  disableClusteringAtZoom: 16,
+});
+
+// ============================================================
+// Тепловой слой: kernel density на Canvas
+// Цвет пикселя = взвешенно-средняя цена/м² (зелёный→жёлтый→красный)
+// Прозрачность = плотность точек (больше объявлений рядом → ярче)
+// Пустые места без объявлений — полностью прозрачные, виден OSM
+// ============================================================
+function hslToRgb(h, s, l) {
+  let r, g, b;
+  if (s === 0) { r = g = b = l; }
+  else {
+    const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+    const p = 2 * l - q;
+    const hue2rgb = (p, q, t) => {
+      if (t < 0) t += 1; if (t > 1) t -= 1;
+      if (t < 1/6) return p + (q - p) * 6 * t;
+      if (t < 1/2) return q;
+      if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
+      return p;
+    };
+    r = hue2rgb(p, q, h + 1/3); g = hue2rgb(p, q, h); b = hue2rgb(p, q, h - 1/3);
+  }
+  return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
+}
+
+const PriceHeatLayer = L.Layer.extend({
+  initialize(getPoints) {
+    this._getPoints = getPoints;
+    // Параметры. Главная идея: одна точка даёт ОЧЕНЬ слабый blob, цвет проявляется
+    // только когда много точек накладываются (как в LA Auto Dealerships) — иначе
+    // получаются дискретные круги, а не плавный градиент.
+    this._sigmaM = 280;                 // полуширина gaussian (метры). Больше → плавнее
+    this._sigmaPxMin = 18;              // мин/макс в пикселях, чтобы blob и не точкой и не на весь экран
+    this._sigmaPxMax = 130;
+    this._weightThreshold = 0.4;        // sumW < этого → прозрачно; режет одиночные точки
+    this._fullOpacityWeight = 18;       // нужно ~18 наложенных gaussian (в пиксель) для солидности
+    this._maxAlpha = 190;
+    this._alphaCurve = 0.5;             // показатель степени для alpha = (sumW/fullW)^curve. 0.5 = sqrt = быстро светлеет, потом плато
+    this._renderScale = 0.5;            // рендер в половинном разрешении и upscale → 4× быстрее, выглядит мягче
+  },
+  onAdd(map) {
+    this._map = map;
+    this._canvas = L.DomUtil.create("canvas", "leaflet-heat-canvas");
+    this._canvas.style.position = "absolute";
+    this._canvas.style.pointerEvents = "none";
+    this._canvas.style.willChange = "transform";
+    map.getPanes().overlayPane.appendChild(this._canvas);
+    map.on("moveend zoomend resize viewreset", this._redraw, this);
+    this._redraw();
+  },
+  onRemove(map) {
+    map.off("moveend zoomend resize viewreset", this._redraw, this);
+    L.DomUtil.remove(this._canvas);
+    this._canvas = null;
+  },
+  redraw() { if (this._canvas) this._redraw(); },
+  _redraw() {
+    const map = this._map;
+    const size = map.getSize();
+    const cssW = size.x, cssH = size.y;
+    if (cssW === 0 || cssH === 0) return;
+
+    // Канвас занимает весь экран в CSS, но внутренний bitmap — в renderScale раз меньше.
+    // Браузер сглаживает при увеличении → дополнительная мягкость, плюс ×4 ускорение.
+    const scale = this._renderScale;
+    const W = Math.max(1, Math.floor(cssW * scale));
+    const H = Math.max(1, Math.floor(cssH * scale));
+    this._canvas.width = W;
+    this._canvas.height = H;
+    this._canvas.style.width = cssW + "px";
+    this._canvas.style.height = cssH + "px";
+    this._canvas.style.imageRendering = "auto"; // smooth upscale
+    const topLeft = map.containerPointToLayerPoint([0, 0]);
+    L.DomUtil.setPosition(this._canvas, topLeft);
+
+    // Пиксели/метр на текущем зуме (для centerLat). В container-px (= css-px).
+    const center = map.getCenter();
+    const p1 = map.latLngToContainerPoint(center);
+    const p2 = map.latLngToContainerPoint([center.lat, center.lng + 0.001]);
+    const metersPerDegLng = 111320 * Math.cos(center.lat * Math.PI / 180);
+    const pxPerMeterCss = Math.abs(p2.x - p1.x) / (0.001 * metersPerDegLng);
+    const pxPerMeter = pxPerMeterCss * scale;  // в render-pixels (с учётом downscale)
+
+    let sigmaPx = this._sigmaM * pxPerMeter;
+    sigmaPx = Math.max(this._sigmaPxMin * scale, Math.min(this._sigmaPxMax * scale, sigmaPx));
+    const radiusPx = Math.ceil(sigmaPx * 2.5);
+    const inv2sigma2 = -1 / (2 * sigmaPx * sigmaPx);
+
+    const padLat = (radiusPx / pxPerMeter) / 111320;
+    const padLng = (radiusPx / pxPerMeter) / metersPerDegLng;
+    const b = map.getBounds();
+    const minLat = b.getSouth() - padLat, maxLat = b.getNorth() + padLat;
+    const minLng = b.getWest() - padLng,  maxLng = b.getEast() + padLng;
+
+    const sumP = new Float32Array(W * H);
+    const sumW = new Float32Array(W * H);
+
+    const points = this._getPoints();
+    let drawn = 0;
+    for (const pt of points) {
+      if (!pt.pps || !pt.lat) continue;
+      if (pt.lat < minLat || pt.lat > maxLat || pt.lng < minLng || pt.lng > maxLng) continue;
+      // latLngToContainerPoint → css-px, переводим в render-px
+      const cp = map.latLngToContainerPoint([pt.lat, pt.lng]);
+      const cx = cp.x * scale, cy = cp.y * scale;
+      const x0 = Math.max(0, Math.floor(cx - radiusPx));
+      const y0 = Math.max(0, Math.floor(cy - radiusPx));
+      const x1 = Math.min(W - 1, Math.ceil(cx + radiusPx));
+      const y1 = Math.min(H - 1, Math.ceil(cy + radiusPx));
+      const r2 = radiusPx * radiusPx;
+      const price = pt.pps;
+      for (let y = y0; y <= y1; y++) {
+        const dy = y - cy, dy2 = dy * dy;
+        const row = y * W;
+        for (let x = x0; x <= x1; x++) {
+          const dx = x - cx;
+          const d2 = dx * dx + dy2;
+          if (d2 > r2) continue;
+          const w = Math.exp(d2 * inv2sigma2);
+          const idx = row + x;
+          sumP[idx] += price * w;
+          sumW[idx] += w;
+        }
+      }
+      drawn++;
+    }
+
+    const img = this._canvas.getContext("2d").createImageData(W, H);
+    const data = img.data;
+    const total = W * H;
+    const thresh = this._weightThreshold;
+    const fullW = this._fullOpacityWeight;
+    const maxA = this._maxAlpha;
+    const curve = this._alphaCurve;
+    for (let i = 0; i < total; i++) {
+      const w = sumW[i];
+      if (w < thresh) continue;
+      const avg = sumP[i] / w;
+      const t = avg < PRICE_MIN ? 0 : avg > PRICE_MAX ? 1 : (avg - PRICE_MIN) / (PRICE_MAX - PRICE_MIN);
+      const hue = (1 - t) * 135 / 360;
+      const [r, g, bl] = hslToRgb(hue, 0.92, 0.43);
+      // alpha по степенной кривой: faint blobs появляются плавно, насыщенность плато
+      const norm = Math.min(1, w / fullW);
+      const alpha = Math.min(maxA, Math.pow(norm, curve) * maxA);
+      const p4 = i * 4;
+      data[p4] = r; data[p4 + 1] = g; data[p4 + 2] = bl; data[p4 + 3] = alpha;
+    }
+    this._canvas.getContext("2d").putImageData(img, 0, 0);
+    this._lastDrawn = drawn;
+  },
+});
+
+let heatLayer = null;
+
+function makeIcon(zone) {
+  const color = ZONE_COLOR[zone] || "#999";
+  return L.divIcon({
+    className: "dot",
+    iconSize: [12, 12],
+    iconAnchor: [6, 6],
+    html: `<div style="width:12px;height:12px;background:${color};border-radius:50%;border:2px solid white;box-shadow:0 0 3px rgba(0,0,0,0.4)"></div>`
+  });
+}
+
+function makePopupHtml(p) {
+  const zone = getZone(p);
+  // dev — берём ldev (отклонение от локального рынка), p.dev сейчас всегда null
+  const dev = p.ldev != null ? p.ldev : p.dev;
+  const devStr = dev != null
+    ? (dev > 0 ? `<span class="dev-exp">+${dev}%</span>` : `<span class="dev-cheap">${dev}%</span>`)
+    : "—";
+  const zoneLabel = (ZONES.find(z => z.key === zone) || {}).label || zone;
+  // Локальный рынок в радиусе 750м
+  let localBlock = "";
+  if (p.lmed != null && p.ln >= 3) {
+    const ldevStr = p.ldev > 0
+      ? `<span class="dev-exp">+${p.ldev}%</span>`
+      : `<span class="dev-cheap">${p.ldev}%</span>`;
+    const verdict = p.ldev < -25 ? "🟢 дешевле района" : p.ldev > 25 ? "🔴 дороже района" : "≈ как район";
+    localBlock = `<div style="margin: 4px 0; padding: 4px 6px; background: #f0f4f8; border-radius: 3px; font-size: 12px;">
+      <b>В радиусе 750м:</b> медиана ${fmtRub(p.lmed)}/м² (${p.ln} объектов)<br>
+      Этот объект: ${ldevStr} ${verdict}
+    </div>`;
+  }
+  return `<div class="pop">
+    <div class="price">${fmtRub(p.price)}</div>
+    <div>${p.area ? p.area + " м²" : "?"} · <b>${fmtRub(p.pps)}/м²</b></div>
+    <div style="margin: 4px 0;">
+      <span style="display:inline-block;width:10px;height:10px;background:${ZONE_COLOR[zone]};border-radius:50%;margin-right:4px;"></span>
+      <b>${zoneLabel}</b> (${devStr} к локальному рынку)
+    </div>
+    ${localBlock}
+    <div style="color:#666; font-size:12px;">
+      ${p.raion || "?"} · ${p.metro || "?"} · ${subtypeRu(p.subtype)}
+    </div>
+    <div style="margin-top:6px; font-size:11px; color:#888;">${p.title || ""}</div>
+    <div style="margin-top:6px;">${renderSourceLinks(p)}</div>
+  </div>`;
+}
+
+// Все ссылки на источники. Если объект собран из 2-3 площадок — будут все.
+const SRC_LABEL = { avito: "Avito", cian: "Cian", yandex: "Яндекс.Недвижимость" };
+function renderSourceLinks(p) {
+  const list = (p.sources && p.sources.length) ? p.sources : [{ src: p.src, url: p.url, id: p.id }];
+  if (list.length === 1) {
+    const s = list[0];
+    return `<a href="${s.url}" target="_blank" rel="noopener">${SRC_LABEL[s.src] || s.src} →</a>`;
+  }
+  return `<div style="font-size:11px; color:#888; margin-bottom:2px;">Тот же объект в ${list.length} источниках:</div>`
+    + list.map(s =>
+        `<a href="${s.url}" target="_blank" rel="noopener" style="display:inline-block; margin-right:10px; margin-bottom:2px;">${SRC_LABEL[s.src] || s.src} →</a>`
+      ).join("");
+}
+
+// Возвращает отфильтрованные точки для нового тепло-слоя
+function getFilteredPoints() {
+  const out = [];
+  for (const p of allPoints) if (passesFilters(p)) out.push(p);
+  return out;
+}
+
+function rebuildHeatmap() {
+  if (!heatLayer) heatLayer = new PriceHeatLayer(getFilteredPoints);
+  if (state.mode === "heatmap" || state.mode === "both") {
+    if (!map.hasLayer(heatLayer)) heatLayer.addTo(map);
+    else heatLayer.redraw();
+  }
+}
+
+// ============================================================
+// Точечные маркеры
+// ============================================================
+function rebuildMarkers() {
+  cluster.clearLayers();
+  const arr = [];
+  let shown = 0;
+  for (const p of allPoints) {
+    if (!passesFilters(p)) continue;
+    const m = L.marker([p.lat, p.lng], { icon: makeIcon(getZone(p)) });
+    m.bindPopup(() => makePopupHtml(p));
+    arr.push(m);
+    shown++;
+  }
+  cluster.addLayers(arr);
+  document.getElementById("counters").innerHTML = `
+    <span>показано: <b>${shown}</b></span><span>всего: ${allPoints.length}</span>`;
+}
+
+function rebuildAll() { rebuildHeatmap(); rebuildMarkers(); }
+
+function setMode(m) {
+  state.mode = m;
+  for (const btn of document.querySelectorAll(".modes button"))
+    btn.classList.toggle("active", btn.dataset.mode === m);
+  if (m === "heatmap" || m === "both") {
+    if (!heatLayer) heatLayer = new PriceHeatLayer(getFilteredPoints);
+    if (!map.hasLayer(heatLayer)) heatLayer.addTo(map);
+    heatLayer.redraw();
+  } else if (heatLayer && map.hasLayer(heatLayer)) {
+    map.removeLayer(heatLayer);
+  }
+  if (m === "points" || m === "both") { if (!map.hasLayer(cluster)) map.addLayer(cluster); }
+  else { map.removeLayer(cluster); }
+}
+
+// ============================================================
+// Подсказка у курсора (медиана в радиусе)
+// ============================================================
+const tipEl = document.getElementById("cursorTip");
+let tipRaf = null;
+
+map.on("mousemove", (e) => {
+  if (tipRaf) cancelAnimationFrame(tipRaf);
+  tipRaf = requestAnimationFrame(() => {
+    const { lat, lng } = e.latlng;
+    // Быстрая bbox-предфильтрация (CURSOR_RADIUS_M ≈ 0.005° lat, 0.009° lng)
+    const dLat = CURSOR_RADIUS_M / 111000;
+    const dLng = CURSOR_RADIUS_M / (111000 * Math.cos(lat * Math.PI / 180));
+    const nearby = [];
+    for (const p of allPoints) {
+      if (!p.pps || !passesFilters(p)) continue;
+      if (Math.abs(p.lat - lat) > dLat || Math.abs(p.lng - lng) > dLng) continue;
+      if (haversineDist(lat, lng, p.lat, p.lng) <= CURSOR_RADIUS_M) nearby.push(p.pps);
+    }
+    if (nearby.length === 0) {
+      tipEl.innerHTML = `<span class="empty">нет данных в радиусе ${CURSOR_RADIUS_M}м</span>`;
+    } else {
+      const sorted = nearby.sort((a, b) => a - b);
+      const med = sorted[Math.floor(sorted.length / 2)];
+      const p25 = sorted[Math.floor(sorted.length * 0.25)];
+      const p75 = sorted[Math.floor(sorted.length * 0.75)];
+      const color = priceToColor(med);
+      tipEl.innerHTML = `
+        <div class="big"><span class="swatch" style="background:${color}"></span>${Math.round(med / 1000)} тыс ₽/м²</div>
+        <div class="sub">медиана из ${nearby.length} объектов · ${CURSOR_RADIUS_M}м</div>
+        <div class="sub">диапазон p25–p75: ${Math.round(p25/1000)}–${Math.round(p75/1000)} тыс</div>`;
+    }
+    tipEl.style.display = "block";
+    tipEl.style.left = (e.originalEvent.clientX + 15) + "px";
+    tipEl.style.top = (e.originalEvent.clientY + 15) + "px";
+  });
+});
+map.on("mouseout", () => { tipEl.style.display = "none"; });
+
+// ============================================================
+// UI: режимы, фильтры
+// ============================================================
+for (const btn of document.querySelectorAll(".modes button"))
+  btn.addEventListener("click", () => setMode(btn.dataset.mode));
+
+// Кнопка «Обновить из БД» — работает только когда страница открыта через serve_map.mjs
+document.getElementById("refreshBtn").addEventListener("click", async () => {
+  const btn = document.getElementById("refreshBtn");
+  const status = document.getElementById("refreshStatus");
+  if (location.protocol === "file:") {
+    status.style.color = "#c93232";
+    status.innerHTML = "Открой через сервер:<br><code>node tools/serve_map.mjs</code><br>или двойной клик по ярлыку «Карта недвижимости»";
+    return;
+  }
+  btn.disabled = true; btn.textContent = "Обновляется…";
+  status.style.color = "#888"; status.textContent = "запускаю pipeline (enrich → heatmap → zones → export)…";
+  const t0 = Date.now();
+  try {
+    const res = await fetch("/refresh", { method: "POST" });
+    const data = await res.json();
+    const sec = ((Date.now() - t0) / 1000).toFixed(1);
+    if (data.ok) {
+      status.style.color = "#0a7d18";
+      status.textContent = `готово за ${sec}с, перезагружаю…`;
+      setTimeout(() => location.reload(), 500);
+    } else {
+      status.style.color = "#c93232";
+      status.textContent = `ошибка на ${data.failed_at} (${sec}с)`;
+      btn.disabled = false; btn.textContent = "Обновить из БД";
+    }
+  } catch (e) {
+    status.style.color = "#c93232";
+    status.textContent = "ошибка сети: " + e.message;
+    btn.disabled = false; btn.textContent = "Обновить из БД";
+  }
+});
+
+function buildZoneControls() {
+  const c = document.getElementById("zones");
+  const counts = {};
+  for (const p of allPoints) { const z = getZone(p); counts[z] = (counts[z] || 0) + 1; }
+  for (const z of ZONES) {
+    const row = document.createElement("label");
+    row.className = "zone-row";
+    row.innerHTML = `
+      <input type="checkbox" checked data-zone="${z.key}">
+      <span class="zone-dot" style="background:${z.color}"></span>
+      ${z.label}
+      <span class="zone-count">${counts[z.key] || 0}</span>`;
+    row.querySelector("input").addEventListener("change", (e) => {
+      if (e.target.checked) state.zones.add(z.key); else state.zones.delete(z.key);
+      rebuildAll();
+    });
+    c.appendChild(row);
+  }
+}
+
+function buildSourceControls() {
+  const c = document.getElementById("sources");
+  const counts = {};
+  // Объект участвует в каждом из своих источников (без двойного счёта повторов).
+  // Сумма счётчиков > общего числа точек — это норма для merged.
+  for (const p of allPoints) {
+    for (const s of pointSources(p)) counts[s] = (counts[s] || 0) + 1;
+  }
+  for (const src of ["avito", "cian", "yandex"]) {
+    const row = document.createElement("label");
+    row.className = "zone-row";
+    row.innerHTML = `
+      <input type="checkbox" checked data-src="${src}">
+      ${src}
+      <span class="zone-count">${counts[src] || 0}</span>`;
+    row.querySelector("input").addEventListener("change", (e) => {
+      if (e.target.checked) state.sources.add(src); else state.sources.delete(src);
+      rebuildAll();
+    });
+    c.appendChild(row);
+  }
+}
+
+function buildDropdowns() {
+  const raions = [...new Set(allPoints.map(p => p.raion).filter(Boolean))].sort();
+  const rsel = document.getElementById("raionFilter");
+  for (const r of raions) {
+    const o = document.createElement("option"); o.value = r; o.textContent = r; rsel.appendChild(o);
+  }
+  rsel.addEventListener("change", e => { state.raion = e.target.value; rebuildAll(); });
+
+  const subtypes = [...new Set(allPoints.map(p => p.subtype).filter(Boolean))]
+    .sort((a, b) => subtypeRu(a).localeCompare(subtypeRu(b), "ru"));
+  const ssel = document.getElementById("subtypeFilter");
+  for (const s of subtypes) {
+    const o = document.createElement("option"); o.value = s; o.textContent = subtypeRu(s); ssel.appendChild(o);
+  }
+  ssel.addEventListener("change", e => { state.subtype = e.target.value; rebuildAll(); });
+
+  document.getElementById("areaFilter").addEventListener("change", e => {
+    state.area = e.target.value; rebuildAll();
+  });
+}
+
+// ============================================================
+// Bootstrap (вызывается gate-скриптом после расшифровки)
+// ============================================================
+function bootstrapMap() {
+if (window.POINTS && Array.isArray(window.POINTS)) {
+  allPoints = window.POINTS;
+  buildZoneControls();
+  buildSourceControls();
+  buildDropdowns();
+  rebuildAll();
+  setMode("heatmap");
+  if (window.POINTS_GENERATED_AT) {
+    const ts = new Date(window.POINTS_GENERATED_AT).toLocaleString("ru-RU");
+    const note = document.createElement("div");
+    note.style.cssText = "font-size:11px;color:#888;margin-top:12px;padding-top:8px;border-top:1px solid #ddd;";
+    note.textContent = `Данные от ${ts}`;
+    document.getElementById("panel").appendChild(note);
+  }
+} else {
+  document.getElementById("map").innerHTML = `<div style="padding:20px;font-family:monospace;color:#c00;">
+    Не загружен points.js — запусти:<br><br>
+    <code>node scripts/pricing/export_map_points.mjs</code>
+  </div>`;
+}
+} // end bootstrapMap
+</script>
+</body>
+</html>
